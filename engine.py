@@ -1,153 +1,213 @@
+import json
 import re
+import string
+import time
 
-import pandas as pd
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.linear_model import LogisticRegression
 from sklearn.pipeline import Pipeline
 
-__all__ = ["analyze_news"]
+MIN_WORD_COUNT = 10
+UPPERCASE_LIMIT = 0.25
+PUNCT_DENSITY_LIMIT = 0.10
+REAL_UPPER = 60.0
+REAL_LOWER = 40.0
 
+STOP_WORDS = {
+    "ve", "veya", "ile", "bir", "bu", "şu", "o", "da", "de", "ki", "mi", "mı",
+    "mu", "mü", "için", "gibi", "ama", "fakat", "ancak", "çok", "daha", "en",
+    "her", "ne", "ya", "ise", "olarak", "olan", "kadar", "sonra", "önce",
+    "göre", "bunu", "bunun", "çünkü", "hiç", "ise", "ancak", "ise", "bütün",
+    "tüm", "ise", "ben", "sen", "biz", "siz", "onlar", "şey", "ile", "den",
+}
 
-_VERI = [
-    # --- Gerçek ---
-    ("Türkiye İstatistik Kurumu eylül ayı enflasyon verilerini açıkladı. Yıllık tüketici fiyat endeksi yüzde 32,9 olarak gerçekleşti, aylık artış yüzde 2,1 oldu.", "Gerçek"),
-    ("Merkez Bankası Para Politikası Kurulu bugün toplandı ve politika faizini sabit tutma kararı aldı. Karar metni kurumun internet sitesinde yayımlandı.", "Gerçek"),
-    ("Sağlık Bakanlığı, sonbahar döneminde grip aşısı uygulamasının 15 Ekim'de başlayacağını duyurdu. Risk gruplarındaki vatandaşlar aile hekimlerine başvurabilecek.", "Gerçek"),
-    ("Meteoroloji Genel Müdürlüğü, hafta sonu Marmara ve Ege bölgelerinde sağanak yağış beklendiğini açıkladı. Sıcaklıkların mevsim normallerinin altına inmesi öngörülüyor.", "Gerçek"),
-    ("Milli Eğitim Bakanlığı 2026-2027 eğitim öğretim yılı takvimini yayımladı. Birinci dönem 21 Ocak'ta sona erecek, karne günü 23 Ocak olarak belirlendi.", "Gerçek"),
-    ("Ulaştırma ve Altyapı Bakanlığı açıklamasına göre Ankara-İzmir hızlı tren hattında yapım çalışmaları planlanan takvimle sürüyor, bazı kesimlerde ise ihale süreci devam ediyor.", "Gerçek"),
-    ("İstanbul Büyükşehir Belediyesi, metro hatlarında yarın bakım çalışması yapılacağını duyurdu. Seferler 02.00'den sonra sınırlı sayıda gerçekleştirilecek.", "Gerçek"),
-    ("AFAD verilerine göre Malatya'da saat 14.22'de 4,1 büyüklüğünde bir deprem meydana geldi. Herhangi bir can kaybı ya da yaralanma bildirilmedi.", "Gerçek"),
-    ("Dışişleri Bakanlığı'ndan yapılan yazılı açıklamada, iki ülke arasındaki ticaret anlaşmasının görüşmelerinin gelecek ay Ankara'da yeniden başlayacağı belirtildi.", "Gerçek"),
-    ("Borsa İstanbul'da BIST 100 endeksi günü yüzde 0,8 yükselişle 9.842 puandan tamamladı. Günlük işlem hacmi 98 milyar lira oldu.", "Gerçek"),
-    ("Yükseköğretim Kurulu, üniversite yerleştirme sonuçlarının açıklandığını duyurdu. Adaylar sonuçlarını ÖSYM'nin giriş sayfasından öğrenebilecek.", "Gerçek"),
-    ("Karayolları Genel Müdürlüğü, bayram tatili öncesinde otoyol ve köprü geçişlerinin ücretsiz olmayacağını ancak ek bir trafik denetimi planlandığını açıkladı.", "Gerçek"),
-
-    # --- Şüpheli ---
-    ("Kulislerden edindiğimiz bilgiye göre bir bakanın görevden alınacağı konuşuluyor ama henüz resmi bir açıklama yok, ismi de söylemek istemiyorlar.", "Şüpheli"),
-    ("Bir tanıdığım belediyede çalışıyor, önümüzdeki ay bütün otoparklara zam gelecekmiş diyor. Doğru mu bilmiyorum ama duyduğumu paylaşıyorum.", "Şüpheli"),
-    ("WhatsApp gruplarında dolaşan mesaja göre yarından itibaren bazı bankalar hesaplardan ek kesinti yapacakmış, kimse net bir şey söylemiyor.", "Şüpheli"),
-    ("İddiaya göre ünlü bir futbolcu sezon sonunda yurt dışına transfer olacak. Menajerine yakın bir kaynak dedi ama teyit edemedik.", "Şüpheli"),
-    ("Duyduğuma göre okulların açılışı tekrar ertelenebilirmiş. Veli grubunda biri yazmış, kaynağı belli değil ama herkes konuşuyor.", "Şüpheli"),
-    ("Sosyal medyada yayılan söylentiye göre ünlü bir dizi oyuncusu setten ayrıldı. Yapım ekibinden açıklama gelmedi, kaynaklar da isim vermiyor.", "Şüpheli"),
-    ("Kulis: Parti içinde kritik bir istifa olabileceği konuşuluyor. Bunu bize yakın bir isim fısıldadı ama doğrulayan çıkmadı.", "Şüpheli"),
-    ("Birkaç kişiden aynı şeyi duydum, akaryakıta bu hafta sonu büyük bir zam geliyormuş. Resmi bir yazı görmedim ama herkes aynı şeyi söylüyor.", "Şüpheli"),
-    ("Twitter'da biri yazmış, yeni vergi paketinde emeklilere dokunulacakmış. Ekran görüntüsü yok, sadece tweet var, doğruluğu şüpheli.", "Şüpheli"),
-    ("Güvenilir olduğunu söyleyen bir kaynağa göre şehrin en büyük alışveriş merkezi bir süre kapatılacakmış. Belediyeden ses yok.", "Şüpheli"),
-    ("İddialara göre iki büyük şirket birleşme görüşmesi yapıyor. Piyasada konuşuluyor ama şirketlerden henüz bir açıklama gelmedi.", "Şüpheli"),
-    ("Bir arkadaşım hastanede çalışıyor, yeni bir salgının başladığını söylüyor. Bakanlıktan açıklama yok, belki de yanlış anlaşılmıştır.", "Şüpheli"),
-
-    # --- Sahte ---
-    ("ŞOK ŞOK ŞOK!!! Hükümet bu gerçeği yıllardır halktan GİZLİYOR! Hemen bakın, silinmeden paylaşın!!!", "Sahte"),
-    ("FLAŞ! Gökyüzünde görülen o ışıkların aslında uzaylı üssü olduğu ortaya çıktı, yetkililer gizliyor, gizlenen gerçek budur!!!", "Sahte"),
-    ("Doktorlar bu mucize çayı SAKLIYOR! Sadece 3 günde bütün kanserler yok oluyor, ilaç şirketleri bunu duymanızı istemiyor!!!", "Sahte"),
-    ("İNANILMAZ KOMPLO! Aşıların içine mikroçip yerleştirildiği belgelendi, dünyayı gizli bir güç yönetiyor, uyanın artık!!!", "Sahte"),
-    ("Büyük skandal! Ünlü bir iş insanının yıllardır gizli bir örgütün başında olduğu ortaya çıktı, medya bu haberi yasakladı!!!", "Sahte"),
-    ("Dünya sonu yaklaşıyor! NASA'nın gizlediği gezegen önümüzdeki hafta dünyaya çarpacak, hemen bakın ve herkese iletin!!!", "Sahte"),
-    ("MUCİZE! Bu yağı sürenler 1 haftada 20 yaş gençleşiyor, dermatologlar bunun ortaya çıkmasından çok korkuyor!!! Paylaş paylaş!", "Sahte"),
-    ("Şok iddia: Depremleri aslında gizli bir ülkenin makineleri tetikliyor, bilim insanları susturuluyor, gerçekleri artık herkes görsün!!!", "Sahte"),
-    ("ACİL!!! Şebeke suyuna zehir karıştırıldı, yetkililer gizliyor, bu mesajı 10 kişiye atmazsan başına bela gelir!", "Sahte"),
-    ("İnanılmaz ama gerçek: Bütün gıdaların içine hükümet gizlice kontrol maddesi katıyor, gizlenen gerçek sonunda ifşa oldu!!!", "Sahte"),
-    ("Yok artık!!! Meşhur şarkıcı aslında 5 yıl önce öldü, yerine klonu çıkıyor, kimse bunu konuşmuyor, hemen bakın!!!", "Sahte"),
-    ("FLAŞ HABER: Ay'a inişin tamamen sahte olduğuna dair kesin kanıt bulundu, yıllardır bizi kandırıyorlar, büyük skandal!!!", "Sahte"),
+MANIPULATIVE_TERMS = [
+    "şok", "flaş", "mucize", "yetkililer gizliyor", "gizliyor", "saklıyor",
+    "inanamayacaksınız", "herkes bunu konuşuyor", "kesinlikle paylaş",
+    "paylaş", "bomba iddia", "skandal", "uyanın", "medya göstermiyor",
+    "silinmeden önce", "çok acil",
 ]
 
-_MANIPULATIF = [
-    "şok", "flaş", "inanılmaz", "gizlenen gerçek", "hemen bakın",
-    "yetkililer gizliyor", "büyük skandal", "mucize", "paylaş",
-    "silinmeden", "uyanın", "ifşa", "yasakladı", "bunu duymanızı istemiyor",
+# (metin, etiket) -> 1: Gerçek, 0: Sahte
+MOCK_DATA = [
+    ("Merkez Bankası Para Politikası Kurulu, bugün yaptığı toplantıda politika faizini sabit tutma kararı aldı. Karar metni kurumun internet sitesinde yayımlandı.", 1),
+    ("Türkiye İstatistik Kurumu tarafından açıklanan verilere göre yıllık enflasyon oranı geçen aya kıyasla geriledi.", 1),
+    ("Milli Eğitim Bakanlığı, yeni eğitim öğretim yılına ilişkin ders programını ve takvimini resmi internet sitesinde duyurdu.", 1),
+    ("Meteoroloji Genel Müdürlüğü, hafta sonu için Marmara ve Ege bölgelerinde sağanak yağış beklendiğini açıkladı.", 1),
+    ("Sağlık Bakanlığı, kış aylarında artan grip vakalarına karşı vatandaşların aşı yaptırmasını tavsiye etti.", 1),
+    ("Ankara'da düzenlenen uluslararası enerji zirvesinde yenilenebilir enerji yatırımları ele alındı. Toplantıya çok sayıda ülkeden yetkili katıldı.", 1),
+    ("Süper Lig'de oynanan karşılaşmada ev sahibi takım rakibini iki bir yenerek puanını yükseltti.", 1),
+    ("Karayolları Genel Müdürlüğü, bayram tatili öncesinde otoyollarda yoğunluğun artması nedeniyle sürücüleri uyardı.", 1),
+    ("Yükseköğretim Kurulu, bu yıl üniversite programlarına yerleştirme sonuçlarının internet üzerinden ilan edileceğini bildirdi.", 1),
+    ("Bilim insanları, yeni geliştirilen yöntemin ameliyat sonrası iyileşme süresini kısaltabileceğini hakemli bir dergide yayımlanan makalede açıkladı.", 1),
+    ("İstanbul Büyükşehir Belediyesi, toplu taşıma hatlarında yaz dönemi sefer saatlerinde değişiklik yapıldığını duyurdu.", 1),
+    ("Dışişleri Bakanlığı'ndan yapılan yazılı açıklamada, iki ülke arasındaki ticaret anlaşmasına ilişkin görüşmelerin önümüzdeki hafta devam edeceği belirtildi.", 1),
+    ("Tarım ve Orman Bakanlığı, kuraklık nedeniyle bazı illerde buğday rekoltesinin geçen yıla göre düştüğünü açıkladı.", 1),
+    ("Türkiye Büyük Millet Meclisi Genel Kurulu'nda görüşülen kanun teklifinin ilk bölümü oy çokluğuyla kabul edildi.", 1),
+    ("Ulaştırma ve Altyapı Bakanlığı, yeni hızlı tren hattında test sürüşlerinin başladığını ve hattın gelecek yıl açılacağını söyledi.", 1),
+    ("Borsa İstanbul'da BIST 100 endeksi günü bir önceki kapanışa göre yüzde bir yükselişle tamamladı.", 1),
+
+    ("ŞOK! Yetkililer gizliyor: Bu bitkiyi çayına atan herkes bir haftada tüm hastalıklardan kurtuluyor, doktorlar bunu duyurmak istemiyor!", 0),
+    ("FLAŞ FLAŞ! Gizli dünya hükümeti iklim değişikliği yalanıyla milyarlarca insanı kontrol altına almaya çalışıyor, uyanın artık!", 0),
+    ("İnanamayacaksınız! Ünlü şarkıcının evinde bulunan gizemli kutu ortalığı karıştırdı, herkes bunu konuşuyor!!!", 0),
+    ("Mucize tedavi bulundu: Sadece limon ve karbonatla kanser bir ayda bitiyor, ilaç şirketleri gerçeği saklıyor, paylaş herkes duysun!", 0),
+    ("Kesinlikle paylaş! Aşıların içine çip yerleştirildiği ortaya çıktı, bunu yazan gazeteciler sessizce susturuldu!!!", 0),
+    ("Bomba iddia: Ay'a hiç gidilmediği kanıtlandı, uzay ajansı yıllardır halkı kandırıyor, işte gizlenen o fotoğraflar!", 0),
+    ("SKANDAL! Market raflarındaki bu ürünü yiyenler zehirleniyor ama medya sizlere gerçeği asla göstermeyecek!", 0),
+    ("Bu haberi okuyan milyoner oluyor! Gizli yöntemle evde oturarak günde on bin lira kazanan emekli teyze bankaları şaşkına çevirdi!", 0),
+    ("Çok acil! Yarın gece yarısı tüm internet kapatılacak, bankadaki paranızı hemen çekin, hükümet bunu sizden saklıyor!", 0),
+    ("Mucize gerçekleşti! Yirmi yıldır yatalak olan adam sadece bu suyu içerek ayağa kalktı, doktorlar şoke oldu!", 0),
+    ("Yetkililer gizliyor: Büyük deprem tarihi çoktan belli ama bilim insanları halkı korkutmamak için açıklamıyor, uyanın!!!", 0),
+    ("Şok iddia: Telefonunuzdaki 5G sinyalleri beyninizi kontrol ediyor, bunu fark eden mühendis esrarengiz şekilde ortadan kayboldu!", 0),
+    ("Dünyayı gizlice yöneten üç aile ortaya çıktı! Bu videoyu silinmeden önce izleyin, çünkü yakında yasaklanacak!", 0),
+    ("İnanılmaz! Tek bir damla bu yağ saçları bir gecede uzatıyor, kuaförler bu sırrın duyulmasını hiç istemiyor!", 0),
+    ("FLAŞ: Ünlü siyasetçinin ölümü saklanıyor, yerine dublörü çıkıyor, sosyal medya bunu konuşuyor, paylaşmadan geçme!", 0),
+    ("Şok edici gerçek: Suya katılan gizli kimyasallar insanları uyuşturuyor, belediyeler biliyor ama kimse konuşmuyor!", 0),
 ]
 
 
-def _egit():
-    df = pd.DataFrame(_VERI, columns=["metin", "etiket"])
-    hat = Pipeline([
-        ("tfidf", TfidfVectorizer(ngram_range=(1, 2), max_features=3000)),
-        ("clf", LogisticRegression(C=1.0, max_iter=1000)),
-    ])
-    hat.fit(df["metin"], df["etiket"])
-    return hat
+class NLPProcessor:
+    def __init__(self, stop_words=None):
+        self.stop_words = set(stop_words or STOP_WORDS)
+        self._punct_table = str.maketrans(
+            {c: " " for c in string.punctuation + "’‘“”…–—«»"}
+        )
+
+    def lower_tr(self, text):
+        # python'un lower()'ı İ ve I'yı Türkçe'ye göre çevirmiyor, önce biz hallediyoruz
+        return text.replace("İ", "i").replace("I", "ı").lower()
+
+    def clean_text(self, text):
+        text = self.lower_tr(text).translate(self._punct_table)
+        tokens = [t for t in text.split() if t not in self.stop_words]
+        return " ".join(tokens)
+
+    def build_vectorizer(self):
+        return TfidfVectorizer(
+            preprocessor=self.clean_text,
+            ngram_range=(1, 1),
+            sublinear_tf=True,
+        )
 
 
-_model = _egit()
+class BaseMLModel:
+    def __init__(self, processor):
+        self.processor = processor
+        self.pipeline = Pipeline([
+            ("tfidf", processor.build_vectorizer()),
+            ("clf", LogisticRegression(C=10.0, max_iter=1000)),
+        ])
+        self.is_trained = False
+
+    def train(self, texts, labels):
+        self.pipeline.fit(texts, labels)
+        self.is_trained = True
+
+    def predict_real_proba(self, text):
+        clf = self.pipeline.named_steps["clf"]
+        idx = list(clf.classes_).index(1)
+        return float(self.pipeline.predict_proba([text])[0][idx])
+
+    def top_keywords(self, text, n=5):
+        vec = self.pipeline.named_steps["tfidf"]
+        row = vec.transform([text])
+        names = vec.get_feature_names_out()
+        cols = row.nonzero()[1]
+        # ağırlığı eşit çıkanlarda sıra kararlı kalsın diye kelimeye göre de sıralıyoruz
+        ranked = sorted(cols, key=lambda c: (-row[0, c], names[c]))
+        return [str(names[c]) for c in ranked[:n]]
 
 
-def _kucult(metin):
-    # python'un lower'ı İ ve I'yı Türkçeye göre çevirmiyor
-    return metin.replace("İ", "i").replace("I", "ı").lower()
+class DetectionSystem:
+    def __init__(self):
+        self.processor = NLPProcessor()
+        self.model = BaseMLModel(self.processor)
+        texts = [t for t, _ in MOCK_DATA]
+        labels = [y for _, y in MOCK_DATA]
+        self.model.train(texts, labels)
 
+    def check_linguistic_flags(self, text):
+        flags = []
+        words = text.split()
 
-def _uslup_kontrol(metin):
-    bulgular = []
+        letters = [c for c in text if c.isalpha()]
+        if letters:
+            ratio = sum(c.isupper() for c in letters) / len(letters)
+            if ratio > UPPERCASE_LIMIT:
+                flags.append(f"Aşırı büyük harf kullanımı (%{ratio * 100:.0f})")
 
-    harfler = [c for c in metin if c.isalpha()]
-    if len(harfler) >= 10:
-        oran = sum(1 for c in harfler if c.isupper()) / len(harfler)
-        if oran > 0.25:
-            bulgular.append(f"Aşırı büyük harf kullanımı (%{oran * 100:.0f})")
+        marks = sum(text.count(c) for c in "!?")
+        if words and (marks / len(words) > PUNCT_DENSITY_LIMIT or re.search(r"[!?]{2,}", text)):
+            flags.append("Abartılı ünlem/soru işareti kullanımı")
 
-    isaret = len(re.findall(r"[!?]", metin))
-    tekrar = re.search(r"[!?]{2,}", metin)
-    yogunluk = isaret / max(len(metin), 1)
-    if tekrar or isaret >= 4 or yogunluk > 0.02:
-        bulgular.append("Aşırı ünlem/soru işareti kullanımı")
+        lowered = self.processor.lower_tr(text)
+        for term in MANIPULATIVE_TERMS:
+            if term in lowered:
+                flags.append(f"Manipülatif ifade: '{term}'")
 
-    kucuk = _kucult(metin)
-    bulunan = [k for k in _MANIPULATIF if k in kucuk]
-    if bulunan:
-        bulgular.append("Manipülatif/tıklama tuzağı ifadeler: " + ", ".join(bulunan))
+        return flags
 
-    return bulgular
+    def build_reason(self, label, p_real, flags):
+        if label == "Gerçek":
+            reason = f"Model, metnin haber diline uygun olduğunu değerlendirdi (gerçek olasılığı %{p_real:.1f})."
+        elif label == "Sahte":
+            reason = f"Model, metni sahte haber örüntülerine yakın buldu (gerçek olasılığı %{p_real:.1f})."
+        else:
+            reason = f"Model kararsız kaldı (gerçek olasılığı %{p_real:.1f}), haberin ek doğrulamayla kontrol edilmesi önerilir."
+        if flags:
+            reason += f" Üslup kontrolünde {len(flags)} işaret bulundu."
+        return reason
 
+    def analyze_news(self, text: str) -> dict:
+        start = time.perf_counter()
+        text = text if isinstance(text, str) else str(text or "")
 
-def _gerekce(label, guven, bulgular):
-    if label == "Gerçek":
-        ilk = f"Model, metnin tarafsız ve kaynağı belli bir haber diline sahip olduğunu değerlendirdi (güven %{guven})."
-    elif label == "Şüpheli":
-        ilk = f"Metin, kaynağı belirsiz iddialar ve kulis dili içerdiği için şüpheli olarak sınıflandırıldı (güven %{guven})."
-    else:
-        ilk = f"Metin, sansasyonel ve doğrulanamaz iddialar içerdiği için sahte haber olarak sınıflandırıldı (güven %{guven})."
+        def elapsed():
+            return round((time.perf_counter() - start) * 1000, 2)
 
-    if bulgular:
-        return ilk + f" Ayrıca üslup analizinde {len(bulgular)} sorun tespit edildi, bu da metnin güvenilirliğini düşürüyor."
-    return ilk + " Üslup analizinde belirgin bir sorun bulunmadı."
+        # FR-1.2 / FR-1.3: kısa metinde modeli hiç çalıştırmıyoruz
+        if len(text.split()) < MIN_WORD_COUNT:
+            return {
+                "label": "Yetersiz Veri",
+                "confidence": 0.0,
+                "linguistic_flags": [],
+                "summary_reason": "Analiz için yeterli veri yok. Metin en az 10 kelime içermelidir.",
+                "execution_time_ms": elapsed(),
+                "top_keywords": [],
+            }
 
+        p_real = self.model.predict_real_proba(text) * 100
 
-def analyze_news(text: str) -> dict:
-    metin = (text or "").strip()
-    if not metin:
+        # FR-3.7: %40-%60 arası gri bölge
+        if p_real > REAL_UPPER:
+            label, confidence = "Gerçek", p_real
+        elif p_real < REAL_LOWER:
+            label, confidence = "Sahte", 100 - p_real
+        else:
+            label, confidence = "Şüpheli", max(p_real, 100 - p_real)
+
+        flags = self.check_linguistic_flags(text)
+        keywords = self.model.top_keywords(text, n=5)
+
         return {
-            "label": "Şüpheli",
-            "confidence": 0.0,
-            "linguistic_flags": [],
-            "summary_reason": "Analiz edilecek bir metin verilmedi.",
+            "label": label,
+            "confidence": round(confidence, 1),
+            "linguistic_flags": flags,
+            "summary_reason": self.build_reason(label, p_real, flags),
+            "execution_time_ms": elapsed(),
+            "top_keywords": keywords,
         }
 
-    olasiliklar = _model.predict_proba([metin])[0]
-    en_iyi = olasiliklar.argmax()
-    label = _model.classes_[en_iyi]
-    guven = round(float(olasiliklar[en_iyi]) * 100, 1)
 
-    bulgular = _uslup_kontrol(metin)
+if __name__ == "__main__":
+    system = DetectionSystem()
 
-    return {
-        "label": label,
-        "confidence": guven,
-        "linguistic_flags": bulgular,
-        "summary_reason": _gerekce(label, guven, bulgular),
-    }
-
-
-if __name__ == '__main__':
     ornekler = [
-        "Sağlık Bakanlığı yeni sezon için aşı takvimini açıkladı, uygulama gelecek hafta başlayacak.",
-        "Duyduğuma göre bu hafta sonu bankalarda bir şeyler olacakmış, kaynağım yok ama herkes konuşuyor.",
-        "FLAŞ!!! Yetkililer GİZLİYOR, hemen bakın, inanılmaz bir mucize ortaya çıktı!!!",
+        "Enerji ve Tabii Kaynaklar Bakanlığı, doğal gaz depolama tesisindeki doluluk oranının kış öncesinde hedeflenen seviyeye ulaştığını açıkladı.",
+        "ŞOK ŞOK! Yetkililer gizliyor, bu mucize damlayı içen herkes bir gecede şifa buluyor, doktorlar sessiz kalıyor!!! Paylaş herkes duysun!",
     ]
-    for o in ornekler:
-        sonuc = analyze_news(o)
-        print("Metin     :", o)
-        print("Etiket    :", sonuc["label"], f"(%{sonuc['confidence']})")
-        print("Bulgular  :", sonuc["linguistic_flags"])
-        print("Gerekçe   :", sonuc["summary_reason"])
+
+    for metin in ornekler:
+        print(metin)
+        print(json.dumps(system.analyze_news(metin), ensure_ascii=False, indent=2))
         print("-" * 60)
