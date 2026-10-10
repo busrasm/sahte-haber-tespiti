@@ -211,3 +211,6 @@ if __name__ == "__main__":
         print(metin)
         print(json.dumps(system.analyze_news(metin), ensure_ascii=False, indent=2))
         print("-" * 60)
+# app.py erisimi icin disari acilan kopru
+_system = DetectionSystem()
+analyze_news = _system.analyze_news
